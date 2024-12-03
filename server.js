@@ -1,200 +1,274 @@
 const express = require("express");
-const { errorMonitor } = require("supertest/lib/test");
-const uuid = require("uuid")
+const uuid = require("uuid");
 const server = express();
-server.use(express.json())
-server.use(express.static('public'))
+server.use(express.json());
+server.use(express.static('public'));
+const axios = require('axios');
 
 
-let activeSessions={
 
 
+
+
+//All your code goes here
+let activeSessions={}
+
+
+async function fetchRandomWord() {
+    let word;
+    do {
+        const response = await axios.get('https://random-word-api.herokuapp.com/word?number=1&length=5');
+        word = response.data[0] || "apple";
+    } while (!(await isRealWord(word))); // Doing this to make sure dictionaryapi likes random word
+    return word;
 }
 
 
-server.get('/newgame',function(req,res){
-    let newID = uuid.v4()
-    let word = ""
-    if(req.query.answer == undefined){
-        word="stink"
-    } else{
-        word = req.query.answer
+// Function to check if the word is a real word
+async function isRealWord(word) {
+    try {
+        const response = await axios.get(`https://api.datamuse.com/words?sp=${word}&max=1`);
+        return response.status === 200;
+    } catch (error) {
+        if (error.response && error.response.status === 404) {
+            return false;
+        }
+        console.error('word:', error.message);
+        throw new Error('Couldnt Validate');
     }
+}
+
+
+server.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+
+server.get('/newgame', async (req,res)=>{
    
-    let newgame = {
-        wordToGuess: word,
+    let newID = uuid.v4();
+    const answer = (req.query.answer || (await fetchRandomWord())).toLowerCase();  
+    let newGame ={
+        wordToGuess: answer,
         guesses:[],
+        wrongLetters:[],
+        closeLetters:[],
+        rightLetters:[],
+        remainingGuesses:6,
+        gameOver: false
+    };
+
+
+
+
+    activeSessions[newID] = newGame;
+    res.status(201);
+    res.send({sessionID: newID});
+})
+
+
+
+
+server.get('/gamestate', (req,res) => {
+    let sessionID = req.query.sessionID;
+    let gameState = activeSessions[sessionID];
+
+
+
+
+    if (!sessionID) {
+        res.status(400);
+        res.send({ error: "Session ID is required" });
+        return;
+    }
+    if (!gameState) {
+        res.status(404);
+        res.send({ error: "Session ID does not match any active session" });
+        return;
+    }
+
+
+
+
+    res.send({gameState: activeSessions[sessionID]});
+    res.status(200);
+});
+
+
+
+
+server.post('/guess', async (req, res) => {
+    let sessionID = req.body.sessionID;
+    let guess = (req.body.guess || "").toLowerCase();
+    let gameState = activeSessions[sessionID];
+
+
+
+
+        if (!sessionID) {
+            res.status(400);
+            res.send({ error: "Session ID is required" });
+            return;
+        }
+        if (!gameState) {
+            res.status(404);
+            res.send({ error: "Session not found" });
+            return;
+        }
+        if (guess.length !== 5) {
+            res.status(400);
+            res.send({ error: "Guess must be exactly 5 characters long" });
+            return;
+        }
+        if (!/^[a-z]+$/.test(guess)) {
+            res.status(400);
+            res.send({ error: "Guess must contain only letters" });
+            return;
+        }
+        if (gameState.gameOver) {
+            res.status(400);
+            res.send({ error: "Game is already over" });
+            return;
+        }
+
+
+       
+       
+    let answer = gameState.wordToGuess;
+    let guessResult = [];
+
+
+
+
+    for (let i = 0; i < guess.length; i++) {
+        let letter = guess[i];
+        let result;
+
+
+
+
+        if (letter === answer[i]) {
+            result = 'RIGHT';
+
+
+
+
+            if (!gameState.rightLetters.includes(letter)) {
+                gameState.rightLetters.push(letter);
+            }
+            gameState.closeLetters = gameState.closeLetters.filter((l) => l !== letter);
+        } else if (answer.includes(letter)) {
+            result = 'CLOSE';
+
+
+
+
+            if (!gameState.rightLetters.includes(letter) && !gameState.closeLetters.includes(letter)) {
+                gameState.closeLetters.push(letter);
+            }
+        } else {
+            result = 'WRONG';
+
+
+
+
+            if (!gameState.wrongLetters.includes(letter)) {
+                gameState.wrongLetters.push(letter);
+            }
+        }
+        guessResult.push({ value: letter, result });
+    }
+    gameState.guesses.push(guessResult);
+
+
+
+
+    gameState.remainingGuesses -= 1;
+    gameState.gameOver = gameState.remainingGuesses <= 0 ||
+                         guessResult.every(item => item.result === 'RIGHT');
+
+
+
+
+    let response = { gameState };
+
+
+
+
+    if (gameState.gameOver) {
+        response.wordToGuess = answer;
+    }
+
+
+    const realWord = await isRealWord(guess);
+        if (!realWord) {
+            res.status(400).send({ error: "Guess must be a real word" });
+           
+        }else{
+
+
+    res.status(201)
+    res.send(response);
+        }
+});
+
+
+
+
+server.delete('/reset', (req, res) => {
+    let sessionID = req.query.sessionID;
+ 
+    if (!sessionID) {
+        res.status(400);
+        res.send({ error: "Session ID is required" });
+        return;
+    }
+ 
+    let gameState = activeSessions[sessionID];
+    if (!gameState) {
+        res.status(404);
+        res.send({ error: "Session not found" });
+        return;
+    }
+ 
+    activeSessions[sessionID] = {
+        wordToGuess: undefined,
+        guesses: [],
         wrongLetters: [],
         closeLetters: [],
         rightLetters: [],
         remainingGuesses: 6,
         gameOver: false
+    };
+ 
+    res.status(200).send({ gameState: activeSessions[sessionID] });
+ });
+
+
+
+
+ server.delete('/delete', (req, res) => {
+    let sessionID = req.query.sessionID;
+ 
+    if (!sessionID) {
+        res.status(400).send({ error: "Session ID is required" });
+        return;
     }
-    activeSessions[newID]= newgame
-
-
-
-
-//     let apiUrl = `https://api.dictionaryapi.dev/api/v2/entries/en/${newgame.wordToGuess}`;
-//     fetch(apiUrl)
-//     .then(response => {
-//     if (!response.ok) {
-//     }
-//     return response.json();
-//   })
-//   .then(data => {
-//     if(data.title != undefined){
-//         nuhuh()
-//     }
-//   })
-//     function nuhuh(){
-//         console.log("hello?")
-//         res.status(400)
-//         res.send({error: "Invalid Word"})
-//     }
-
-
-    res.status(201)
-    res.send({sessionID: newID})
-})
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-server.get('/gamestate', function(req,res){
-    sessionID = req.query.sessionID
-    if(sessionID == undefined){
-        res.status(400)
-        res.send({error: "Bad request"})
+ 
+    if (!activeSessions[sessionID]) {
+        res.status(404).send({ error: "Session not found" });
+        return;
     }
-    gameState = activeSessions[sessionID]
-    if(gameState == undefined){
-        res.status(404)
-        res.send({error: "Failed"})
-    }
-    res.status(200)
-    res.send({gameState: gameState})
-})
-
-
-server.post('/guess', function(req,res){
-    sessionID = req.body.sessionID
-    if(sessionID == undefined){
-        res.status(400)
-        res.send({error: "Bad request"})
-    }
-    guess = req.body.guess.toLowerCase()
-    gameState = activeSessions[sessionID]
-    if(gameState == undefined){
-        res.status(404)
-        res.send({error: "Failed"})
-    }
-    let gstatus = [false,false,false,false,false]
-    if(gameState.remainingGuesses > 0 && gameState.gameOver != true){
-        let answer = gameState.wordToGuess.split('')
-        let attempt = guess.split('')
-
-
-        if(attempt.length != 5){
-            res.status(400)
-            res.send({error: "Invalid length"})
-        }
-        let valid = /[a-z]/
-        for(let i=0;i<5;i++){
-            if(attempt[i].match(valid) == null){
-                res.status(400)
-                res.send({error: "Invalid Character"})
-            }
-        }
-        let newguess = [{value:attempt[0], result:''},{value:attempt[1], result:''},{value:attempt[2], result:''},{value:attempt[3], result:''},{value:attempt[4], result:''},]
-            for(let i=0; i <5;i++){
-                if(answer[i] == attempt[i]){
-                    if(gameState.rightLetters.includes(answer[i]) == false){
-                        if(gameState.closeLetters.includes(attempt[i]) == false){
-                            gameState.rightLetters.push(answer[i])
-                        } else {
-                            gameState.closeLetters.splice(gameState.closeLetters.indexOf(attempt[i]), 1)
-                            gameState.rightLetters.push(answer[i])
-                        }
-                    }
-                    newguess[i].result = 'RIGHT'
-                    gstatus[i] = true
-                } else {    
-                    for(let i2 = 0; i2<5;i2++){
-                        if(answer[i2] == attempt[i]){
-                            if(gstatus[i2] == false){
-                                if(gameState.closeLetters.includes(attempt[i]) == false){
-                                    if(gameState.rightLetters.includes(answer[i2]) == false) {
-                                        gameState.closeLetters.push(attempt[i])
-                                    }
-                                }
-                                newguess[i].result = 'CLOSE'
-                        }
-                    } else if(newguess[i].result != 'CLOSE'){
-                        newguess[i].result = 'WRONG'
-                    }
-                }
-                if(gameState.wrongLetters.includes(newguess[i].value) == false){
-                    if(gameState.closeLetters.includes(newguess[i].value) == false){
-                        gameState.wrongLetters.push(newguess[i].value)
-                    }
-                }
-            }  
-    }
-        gameState.remainingGuesses = gameState.remainingGuesses -1
-        gameState.guesses.push(newguess)
-    }
-    if(gameState.remainingGuesses <= 0){
-        gameState.gameOver=true
-    }
-    let correct = true
-    for(let i=0; i<5;i++){
-       if(gameState.guesses[gameState.guesses.length-1][i].result == "WRONG" || gameState.guesses[gameState.guesses.length-1][i].result == "CLOSE"){
-        correct = false
-       }
-    }
-    if(correct == true){
-        gameState.gameOver = true
-    }
-    res.status(201)
-    res.send({gameState: gameState})
-})
+ 
+    delete activeSessions[sessionID];
 
 
 
 
-
-
-
-
-
-//Do not remove this line. This allows the test suite to start
-//multiple instances of your server on different ports
-module.exports = server;
-
-
-
-
-
-
-
-
-
-
+    res.status(204).send();
+ });
+ 
+ 
 
 
 
